@@ -7,7 +7,7 @@ setlocal enabledelayedexpansion
 ::
 ::  What this script does:
 ::    1. Silently installs / verifies Node.js  (install_node.bat)
-::    2. Silently installs / verifies Ollama   (install_ollama.bat)
+::    2. Silently installs / upgrades Ollama    (install.ps1)
 ::    3. Ensures Ollama service is running
 ::    4. Starts the Node.js chat server (server.js) and opens the UI
 :: ============================================================
@@ -33,8 +33,8 @@ if %errorlevel% neq 0 (
 echo.
 
 :: ── Step 2: Ollama ──────────────────────────────────────────
-echo [2/4] Checking / installing Ollama...
-call install_ollama.bat
+echo [2/4] Installing / upgrading Ollama...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
 if %errorlevel% neq 0 (
     echo.
     echo ERROR: Ollama setup failed. Cannot continue.
