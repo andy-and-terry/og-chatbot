@@ -1,323 +1,228 @@
 <#
 .SYNOPSIS
-    Install, upgrade, or uninstall Ollama on Windows.
+    Windows installer for the offlineAI local chat app.
 
 .DESCRIPTION
-    Downloads and installs Ollama.
+    - Checks prerequisites (Node.js, npm, Ollama).
+    - Runs `npm install`.
+    - Pulls the chosen Ollama model (default: qwen2.5:3b).
+    - Sets OLLAMA_MODEL for the current session and shows how to persist it.
+    - Optionally starts the app.
 
-    Quick install:
-
-        irm https://ollama.com/install.ps1 | iex
-
-    Specific version:
-
-        $env:OLLAMA_VERSION="0.5.7"; irm https://ollama.com/install.ps1 | iex
-
-    Custom install directory:
-
-        $env:OLLAMA_INSTALL_DIR="D:\\Ollama"; irm https://ollama.com/install.ps1 | iex
-
-    Uninstall:
-
-        $env:OLLAMA_UNINSTALL=1; irm https://ollama.com/install.ps1 | iex
-
-    Environment variables:
-
-        OLLAMA_VERSION       Target version (default: latest stable)
-        OLLAMA_INSTALL_DIR   Custom install directory
-        OLLAMA_UNINSTALL     Set to 1 to uninstall Ollama
-        OLLAMA_DEBUG         Enable verbose output
+.PARAMETER Model
+    Ollama model to pull and use. Overrides the OLLAMA_MODEL environment variable.
+    Defaults to qwen2.5:3b if neither this parameter nor the env var is set.
 
 .EXAMPLE
-    irm https://ollama.com/install.ps1 | iex
-
-.EXAMPLE
-    $env:OLLAMA_VERSION = "0.5.7"; irm https://ollama.com/install.ps1 | iex
-
-.LINK
-    https://ollama.com
+    .\install.ps1
+    .\install.ps1 -Model qwen2.5:7b
 #>
 
+[CmdletBinding()]
+param(
+    [string]$Model = ""
+)
+
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$ProgressPreference = "SilentlyContinue"
 
-# --------------------------------------------------------------------------
-# Configuration from environment variables
-# --------------------------------------------------------------------------
-
-$Version      = if ($env:OLLAMA_VERSION) { $env:OLLAMA_VERSION } else { "" }
-$InstallDir   = if ($env:OLLAMA_INSTALL_DIR) { $env:OLLAMA_INSTALL_DIR } else { "" }
-$Uninstall    = $env:OLLAMA_UNINSTALL -eq "1"
-$DebugInstall = [bool]$env:OLLAMA_DEBUG
-
-# --------------------------------------------------------------------------
-# Constants
-# --------------------------------------------------------------------------
-
-# OLLAMA_DOWNLOAD_URL for developer testing only
-$DownloadBaseURL = if ($env:OLLAMA_DOWNLOAD_URL) { $env:OLLAMA_DOWNLOAD_URL.TrimEnd('/') } else { "https://ollama.com/download" }
-$InnoSetupUninstallGuid = "{44E83376-CE68-45EB-8FC1-393500EB558C}_is1"
-
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Helpers
-# --------------------------------------------------------------------------
-
-function Write-Status {
-    param([string]$Message)
-    if ($DebugInstall) { Write-Host $Message }
+# ---------------------------------------------------------------------------
+function Write-Header {
+    param([string]$Text)
+    Write-Host ""
+    Write-Host "==> $Text" -ForegroundColor Cyan
 }
 
-function Write-Step {
-    param([string]$Message)
-    if ($DebugInstall) { Write-Host ">>> $Message" -ForegroundColor Cyan }
+function Write-OK {
+    param([string]$Text)
+    Write-Host "  [OK] $Text" -ForegroundColor Green
 }
 
-function Test-Signature {
-    param([string]$FilePath)
-
-    $sig = Get-AuthenticodeSignature -FilePath $FilePath
-    if ($sig.Status -ne "Valid") {
-        Write-Status "  Signature status: $($sig.Status)"
-        return $false
-    }
-
-    # Verify it's signed by Ollama Inc. (check exact organization name)
-    # Anchor with comma/boundary to prevent "O=Not Ollama Inc." from matching
-    $subject = $sig.SignerCertificate.Subject
-    if ($subject -notmatch "(^|, )O=Ollama Inc\.(,|$)") {
-        Write-Status "  Unexpected signer: $subject"
-        return $false
-    }
-
-    Write-Status "  Signature valid: $subject"
-    return $true
+function Write-Fail {
+    param([string]$Text)
+    Write-Host "  [FAIL] $Text" -ForegroundColor Red
 }
 
-function Find-InnoSetupInstall {
-    # Check both HKCU (per-user) and HKLM (per-machine) locations
-    $possibleKeys = @(
-        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$InnoSetupUninstallGuid",
-        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$InnoSetupUninstallGuid",
-        "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\$InnoSetupUninstallGuid"
-    )
-
-    foreach ($key in $possibleKeys) {
-        if (Test-Path $key) {
-            Write-Status "  Found install at: $key"
-            return $key
-        }
-    }
-    return $null
+function Write-Info {
+    param([string]$Text)
+    Write-Host "  $Text" -ForegroundColor Yellow
 }
 
-function Update-SessionPath {
-    # Update PATH in current session so 'ollama' works immediately
-    if ($InstallDir) {
-        $ollamaDir = $InstallDir
-    } else {
-        $ollamaDir = Join-Path $env:LOCALAPPDATA "Programs\Ollama"
-    }
-
-    # Add to PATH if not already present
-    if (Test-Path $ollamaDir) {
-        $currentPath = $env:PATH -split ';'
-        if ($ollamaDir -notin $currentPath) {
-            $env:PATH = "$ollamaDir;$env:PATH"
-            Write-Status "  Added $ollamaDir to session PATH"
-        }
-    }
+function Confirm-YesNo {
+    param([string]$Prompt, [bool]$Default = $true)
+    $hint = if ($Default) { "[Y/n]" } else { "[y/N]" }
+    $answer = Read-Host "$Prompt $hint"
+    if ([string]::IsNullOrWhiteSpace($answer)) { return $Default }
+    return $answer -match '^[Yy]'
 }
 
-function Invoke-Download {
-    param(
-        [string]$Url,
-        [string]$OutFile
-    )
-
-    Write-Status "  Downloading: $Url"
-    try {
-        $request = [System.Net.HttpWebRequest]::Create($Url)
-        $request.AllowAutoRedirect = $true
-        $response = $request.GetResponse()
-        $totalBytes = $response.ContentLength
-        $stream = $response.GetResponseStream()
-        $fileStream = [System.IO.FileStream]::new($OutFile, [System.IO.FileMode]::Create)
-        $buffer = [byte[]]::new(65536)
-        $totalRead = 0
-        $lastUpdate = [DateTime]::MinValue
-        $barWidth = 40
-
-        try {
-            while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                $fileStream.Write($buffer, 0, $read)
-                $totalRead += $read
-
-                $now = [DateTime]::UtcNow
-                if (($now - $lastUpdate).TotalMilliseconds -ge 250) {
-                    if ($totalBytes -gt 0) {
-                        $pct = [math]::Min(100.0, ($totalRead / $totalBytes) * 100)
-                        $filled = [math]::Floor($barWidth * $pct / 100)
-                        $empty = $barWidth - $filled
-                        $bar = ('#' * $filled) + (' ' * $empty)
-                        $pctFmt = $pct.ToString("0.0")
-                        Write-Host -NoNewline "`r$bar ${pctFmt}%"
-                    } else {
-                        $sizeMB = [math]::Round($totalRead / 1MB, 1)
-                        Write-Host -NoNewline "`r${sizeMB} MB downloaded..."
-                    }
-                    $lastUpdate = $now
-                }
-            }
-
-            # Final progress update
-            if ($totalBytes -gt 0) {
-                $bar = '#' * $barWidth
-                Write-Host "`r$bar 100.0%"
-            } else {
-                $sizeMB = [math]::Round($totalRead / 1MB, 1)
-                Write-Host "`r${sizeMB} MB downloaded.          "
-            }
-        } finally {
-            $fileStream.Close()
-            $stream.Close()
-            $response.Close()
-        }
-    } catch {
-        if ($_.Exception -is [System.Net.WebException]) {
-            $webEx = [System.Net.WebException]$_.Exception
-            if ($webEx.Response -and ([System.Net.HttpWebResponse]$webEx.Response).StatusCode -eq [System.Net.HttpStatusCode]::NotFound) {
-                throw "Download failed: not found at $Url"
-            }
-        }
-        if ($_.Exception.InnerException -is [System.Net.WebException]) {
-            $webEx = [System.Net.WebException]$_.Exception.InnerException
-            if ($webEx.Response -and ([System.Net.HttpWebResponse]$webEx.Response).StatusCode -eq [System.Net.HttpStatusCode]::NotFound) {
-                throw "Download failed: not found at $Url"
-            }
-        }
-        throw "Download failed for ${Url}: $($_.Exception.Message)"
-    }
+# ---------------------------------------------------------------------------
+# 1. Platform check
+# ---------------------------------------------------------------------------
+Write-Header "Checking platform"
+# $env:OS is 'Windows_NT' on all modern Windows versions and is available in
+# both Windows PowerShell 5.x and PowerShell 7+.
+if ($env:OS -ne "Windows_NT") {
+    Write-Fail "This installer is for Windows only."
+    Write-Info "On Linux/macOS, run: npm install && ollama pull qwen2.5:3b && npm start"
+    exit 1
 }
+Write-OK "Running on Windows."
 
-# --------------------------------------------------------------------------
-# Uninstall
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 2. Prerequisite checks
+# ---------------------------------------------------------------------------
+Write-Header "Checking prerequisites"
 
-function Invoke-Uninstall {
-    Write-Step "Uninstalling Ollama"
+$missingPrereqs = $false
 
-    $regKey = Find-InnoSetupInstall
-    if (-not $regKey) {
-        Write-Host ">>> Ollama is not installed."
-        return
-    }
-
-    $uninstallString = (Get-ItemProperty -Path $regKey).UninstallString
-    if (-not $uninstallString) {
-        Write-Warning "No uninstall string found in registry"
-        return
-    }
-
-    # Strip quotes if present
-    $uninstallExe = $uninstallString -replace '"', ''
-    Write-Status "  Uninstaller: $uninstallExe"
-
-    if (-not (Test-Path $uninstallExe)) {
-        Write-Warning "Uninstaller not found at: $uninstallExe"
-        return
-    }
-
-    Write-Host ">>> Launching uninstaller..."
-    # Run with GUI so user can choose whether to keep models
-    Start-Process -FilePath $uninstallExe -Wait
-
-    # Verify removal
-    if (Find-InnoSetupInstall) {
-        Write-Warning "Uninstall may not have completed"
-    } else {
-        Write-Host ">>> Ollama has been uninstalled."
-    }
-}
-
-# --------------------------------------------------------------------------
-# Install
-# --------------------------------------------------------------------------
-
-function Invoke-Install {
-    # Determine installer URL
-    if ($Version) {
-        $installerUrl = "$DownloadBaseURL/OllamaSetup.exe?version=$Version"
-    } else {
-        $installerUrl = "$DownloadBaseURL/OllamaSetup.exe"
-    }
-
-    # Download installer
-    Write-Step "Downloading Ollama"
-    if (-not $DebugInstall) {
-        Write-Host ">>> Downloading Ollama for Windows..."
-    }
-
-    $tempInstaller = Join-Path $env:TEMP "OllamaSetup.exe"
-    Invoke-Download -Url $installerUrl -OutFile $tempInstaller
-
-    # Verify signature
-    Write-Step "Verifying signature"
-    if (-not (Test-Signature -FilePath $tempInstaller)) {
-        Remove-Item $tempInstaller -Force -ErrorAction SilentlyContinue
-        throw "Installer signature verification failed"
-    }
-
-    # Build installer arguments
-    $installerArgs = "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES"
-    if ($InstallDir) {
-        $installerArgs += " /DIR=`"$InstallDir`""
-    }
-    Write-Status "  Installer args: $installerArgs"
-
-    # Run installer
-    Write-Step "Installing Ollama"
-    if (-not $DebugInstall) {
-        Write-Host ">>> Installing Ollama..."
-    }
-
-    # Create upgrade marker so the app starts hidden
-    # The app checks for this file on startup and removes it after
-    $markerDir = Join-Path $env:LOCALAPPDATA "Ollama"
-    $markerFile = Join-Path $markerDir "upgraded"
-    if (-not (Test-Path $markerDir)) {
-        New-Item -ItemType Directory -Path $markerDir -Force | Out-Null
-    }
-    New-Item -ItemType File -Path $markerFile -Force | Out-Null
-    Write-Status "  Created upgrade marker: $markerFile"
-
-    # Start installer and wait for just the installer process (not children)
-    # Using -Wait would wait for Ollama to exit too, which we don't want
-    $proc = Start-Process -FilePath $tempInstaller `
-        -ArgumentList $installerArgs `
-        -PassThru
-    $proc.WaitForExit()
-
-    if ($proc.ExitCode -ne 0) {
-        Remove-Item $tempInstaller -Force -ErrorAction SilentlyContinue
-        throw "Installation failed with exit code $($proc.ExitCode)"
-    }
-
-    # Cleanup
-    Remove-Item $tempInstaller -Force -ErrorAction SilentlyContinue
-
-    # Update PATH in current session so 'ollama' works immediately
-    Write-Step "Updating session PATH"
-    Update-SessionPath
-
-    Write-Host ">>> Install complete. Run 'ollama' from the command line."
-}
-
-# --------------------------------------------------------------------------
-# Main
-# --------------------------------------------------------------------------
-
-if ($Uninstall) {
-    Invoke-Uninstall
+# --- Node.js ---
+if (-not (Get-Command "node" -ErrorAction SilentlyContinue)) {
+    Write-Fail "Node.js is not installed or not on PATH."
+    Write-Info "Install Node.js LTS from: https://nodejs.org/en/download"
+    Write-Info "After installing, restart your terminal and re-run this script."
+    $missingPrereqs = $true
 } else {
-    Invoke-Install
+    $nodeVersion = & node --version 2>&1
+    Write-OK "Node.js found: $nodeVersion"
 }
+
+# --- npm ---
+if (-not (Get-Command "npm" -ErrorAction SilentlyContinue)) {
+    Write-Fail "npm is not installed or not on PATH."
+    Write-Info "npm is bundled with Node.js. Reinstall Node.js from: https://nodejs.org/en/download"
+    $missingPrereqs = $true
+} else {
+    $npmVersion = & npm --version 2>&1
+    Write-OK "npm found: v$npmVersion"
+}
+
+# --- Ollama ---
+if (-not (Get-Command "ollama" -ErrorAction SilentlyContinue)) {
+    Write-Fail "Ollama is not installed or not on PATH."
+    Write-Info "Download and install Ollama from: https://ollama.com/download/windows"
+    Write-Info "After installing, restart your terminal and re-run this script."
+    $missingPrereqs = $true
+} else {
+    $ollamaVersion = & ollama --version 2>&1
+    Write-OK "Ollama found: $ollamaVersion"
+}
+
+if ($missingPrereqs) {
+    Write-Host ""
+    Write-Fail "One or more prerequisites are missing. Please install them and re-run install.bat (or install.ps1)."
+    exit 2
+}
+
+# ---------------------------------------------------------------------------
+# 3. Resolve model name
+# ---------------------------------------------------------------------------
+Write-Header "Choosing Ollama model"
+
+$defaultModel = "qwen2.5:3b"
+
+if ($Model -ne "") {
+    $chosenModel = $Model
+    Write-OK "Model supplied via -Model parameter: $chosenModel"
+} elseif (-not [string]::IsNullOrEmpty($env:OLLAMA_MODEL)) {
+    $chosenModel = $env:OLLAMA_MODEL
+    Write-OK "Model from OLLAMA_MODEL environment variable: $chosenModel"
+} else {
+    Write-Info "No model specified. Default is '$defaultModel' (recommended for 8 GB RAM)."
+    $userInput = Read-Host "  Press Enter to accept, or type a different model name (e.g. qwen2.5:7b)"
+    if ([string]::IsNullOrWhiteSpace($userInput)) {
+        $chosenModel = $defaultModel
+    } else {
+        $chosenModel = $userInput.Trim()
+    }
+    Write-OK "Using model: $chosenModel"
+}
+
+# ---------------------------------------------------------------------------
+# 4. npm install
+# ---------------------------------------------------------------------------
+Write-Header "Installing Node.js dependencies (npm install)"
+
+$repoRoot = $PSScriptRoot
+if ([string]::IsNullOrEmpty($repoRoot)) {
+    $repoRoot = (Get-Location).Path
+}
+
+if (-not (Test-Path (Join-Path $repoRoot "package.json"))) {
+    Write-Info "Warning: package.json not found in '$repoRoot'."
+    Write-Info "Skipping npm install. If this is unexpected, make sure you are running the script from the repo root."
+} else {
+    Push-Location $repoRoot
+    try {
+        & npm install
+        if ($LASTEXITCODE -ne 0) {
+            Write-Fail "npm install failed (exit code $LASTEXITCODE)."
+            exit $LASTEXITCODE
+        }
+        Write-OK "npm install completed."
+    } finally {
+        Pop-Location
+    }
+}
+
+# ---------------------------------------------------------------------------
+# 5. Pull Ollama model
+# ---------------------------------------------------------------------------
+Write-Header "Pulling Ollama model: $chosenModel"
+Write-Info "This may take a while on the first run (download size varies by model)."
+
+& ollama pull $chosenModel
+if ($LASTEXITCODE -ne 0) {
+    Write-Fail "ollama pull failed (exit code $LASTEXITCODE)."
+    exit $LASTEXITCODE
+}
+Write-OK "Model '$chosenModel' is ready."
+
+# ---------------------------------------------------------------------------
+# 6. Set OLLAMA_MODEL for this session + persistence instructions
+# ---------------------------------------------------------------------------
+Write-Header "Setting OLLAMA_MODEL"
+
+$env:OLLAMA_MODEL = $chosenModel
+Write-OK "OLLAMA_MODEL set to '$chosenModel' for this PowerShell session."
+
+Write-Host ""
+Write-Info "To persist this across sessions, run ONE of the following:"
+Write-Info ""
+Write-Info "  (User) [Environment]::SetEnvironmentVariable('OLLAMA_MODEL', '$chosenModel', 'User')"
+Write-Info "  (System, admin) [Environment]::SetEnvironmentVariable('OLLAMA_MODEL', '$chosenModel', 'Machine')"
+Write-Info ""
+Write-Info "Or add the following line to your PowerShell profile (`$PROFILE):"
+Write-Info "  `$env:OLLAMA_MODEL = '$chosenModel'"
+
+# ---------------------------------------------------------------------------
+# 7. Optionally start the app
+# ---------------------------------------------------------------------------
+Write-Host ""
+Write-Header "Installation complete"
+Write-OK "offlineAI is ready to use."
+Write-Host ""
+
+$startNow = Confirm-YesNo "Would you like to start the app now?" $true
+if ($startNow) {
+    Write-Header "Starting the app (npm start)"
+    Push-Location $repoRoot
+    try {
+        & npm start
+        if ($LASTEXITCODE -ne 0) {
+            Write-Fail "npm start failed (exit code $LASTEXITCODE)."
+            exit $LASTEXITCODE
+        }
+    } finally {
+        Pop-Location
+    }
+} else {
+    Write-Host ""
+    Write-Info "To start the app later, run from the repo directory:"
+    Write-Info "  npm start"
+    Write-Info "Or double-click install.bat and choose 'start' when prompted."
+}
+
+exit 0
