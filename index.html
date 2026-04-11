@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>The OG Chatbot (Offline)</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      body {
+        font-family: system-ui, Arial, sans-serif;
+        background: #0b0f14;
+        color: #e7eef8;
+        display: flex;
+        flex-direction: column;
+        height: 100dvh;
+      }
+
+      header {
+        padding: 14px 20px;
+        border-bottom: 1px solid #233041;
+        flex-shrink: 0;
+      }
+
+      header strong { font-size: 1.1rem; }
+      header span { opacity: 0.6; font-size: 0.85rem; margin-left: 8px; }
+
+      #chat {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .msg {
+        max-width: 75%;
+        padding: 10px 14px;
+        border-radius: 12px;
+        white-space: pre-wrap;
+        line-height: 1.5;
+        font-size: 0.95rem;
+      }
+
+      .msg .meta {
+        font-size: 0.75rem;
+        opacity: 0.65;
+        margin-bottom: 4px;
+      }
+
+      .user {
+        background: #1f3b5b;
+        align-self: flex-end;
+      }
+
+      .bot {
+        background: #17212c;
+        border: 1px solid #233041;
+        align-self: flex-start;
+      }
+
+      .thinking .body::after {
+        content: " ▋";
+        animation: blink 0.9s step-start infinite;
+      }
+
+      @keyframes blink {
+        50% { opacity: 0; }
+      }
+
+      footer {
+        border-top: 1px solid #233041;
+        padding: 12px 20px;
+        flex-shrink: 0;
+        background: #0b0f14;
+      }
+
+      form {
+        display: flex;
+        gap: 10px;
+        max-width: 860px;
+        margin: 0 auto;
+      }
+
+      input {
+        flex: 1;
+        padding: 11px 14px;
+        border-radius: 10px;
+        border: 1px solid #2c3f52;
+        background: #0e141c;
+        color: #e7eef8;
+        font-size: 0.95rem;
+        outline: none;
+      }
+
+      input:focus { border-color: #3a6ea8; }
+
+      button {
+        padding: 11px 18px;
+        border-radius: 10px;
+        border: 1px solid #2c3f52;
+        background: #1b2a3a;
+        color: #e7eef8;
+        cursor: pointer;
+        font-size: 0.95rem;
+        transition: background 0.15s;
+      }
+
+      button:hover:not(:disabled) { background: #243548; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+      ::-webkit-scrollbar { width: 6px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #2c3f52; border-radius: 3px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>The OG Chatbot</strong>
+      <span>offline &mdash; Ollama on localhost</span>
+    </header>
+
+    <div id="chat"></div>
+
+    <footer>
+      <form id="composer">
+        <input
+          id="text"
+          type="text"
+          autocomplete="off"
+          placeholder="Ask The OG Chatbot…"
+        />
+        <button id="send" type="submit">Send</button>
+      </form>
+    </footer>
+
+    <script>
+      const chatEl  = document.getElementById("chat");
+      const form    = document.getElementById("composer");
+      const textEl  = document.getElementById("text");
+      const sendBtn = document.getElementById("send");
+
+      // Conversation history sent to the server (no system prompt here).
+      const messages = [];
+
+      function addMessage(role, content, thinking) {
+        const wrap = document.createElement("div");
+        wrap.className = "msg " + (role === "user" ? "user" : "bot");
+        if (thinking) wrap.classList.add("thinking");
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = role === "user" ? "You" : "The OG Chatbot";
+
+        const body = document.createElement("div");
+        body.className = "body";
+        body.textContent = content;
+
+        wrap.appendChild(meta);
+        wrap.appendChild(body);
+        chatEl.appendChild(wrap);
+        chatEl.scrollTop = chatEl.scrollHeight;
+        return { wrap, body };
+      }
+
+      async function sendMessage(userText) {
+        messages.push({ role: "user", content: userText });
+        addMessage("user", userText);
+
+        const { wrap: thinkWrap, body: thinkBody } = addMessage("assistant", "Thinking…", true);
+
+        sendBtn.disabled = true;
+        textEl.disabled  = true;
+
+        try {
+          const resp = await fetch("/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ messages })
+          });
+
+          const data = await resp.json();
+          if (!resp.ok) throw new Error(data.error || "Request failed");
+
+          const reply = (data.reply || "").trim();
+          messages.push({ role: "assistant", content: reply });
+
+          // Replace the thinking bubble with the real reply.
+          thinkWrap.classList.remove("thinking");
+          thinkBody.textContent = reply || "(empty reply)";
+        } catch (e) {
+          thinkWrap.classList.remove("thinking");
+          thinkBody.textContent = "Error: " + e.message;
+        } finally {
+          sendBtn.disabled = false;
+          textEl.disabled  = false;
+          textEl.focus();
+        }
+      }
+
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const t = textEl.value.trim();
+        if (!t) return;
+        textEl.value = "";
+        sendMessage(t);
+      });
+
+      // Greeting
+      addMessage(
+        "assistant",
+        "Hey! I'm The OG Chatbot. I run completely offline using Ollama on your machine. What's on your mind?"
+      );
+      textEl.focus();
+    </script>
+  </body>
+</html>
