@@ -1,107 +1,91 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal EnableExtensions EnableDelayedExpansion
 
-:: ============================================================
-::  start.bat
-::  The OG Chatbot — single-click launcher for Windows.
-::
-::  What this script does:
-::    1. Silently installs / verifies Node.js  (install_node.bat)
-::    2. Silently installs / upgrades Ollama    (install.ps1)
-::    3. Ensures Ollama service is running
-::    4. Starts the Node.js chat server (server.js) and opens the UI
-:: ============================================================
+set "REPO_DIR=%~dp0"
+set "REPO_DIR=%REPO_DIR:~0,-1%"
 
-:: Change to the directory where this script lives so relative
-:: paths to the other .bat files and server.js always work.
-cd /d "%~dp0"
-
-echo ============================================================
-echo  The OG Chatbot — startup
-echo ============================================================
+echo.
+echo ===============================
+echo   The OG Chatbot - start.bat
+echo ===============================
+echo Repo: "%REPO_DIR%"
 echo.
 
-:: ── Step 1: Node.js ─────────────────────────────────────────
-echo [1/4] Checking / installing Node.js...
-call install_node.bat
-if %errorlevel% neq 0 (
-    echo.
-    echo ERROR: Node.js setup failed. Cannot continue.
-    pause
-    exit /b 1
+REM Refresh PATH for this session (Machine + User)
+for /f "tokens=2,*" %%A in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v Path 2^>nul ^| find /i "Path"') do set "MACHINE_PATH=%%B"
+for /f "tokens=2,*" %%A in ('reg query "HKCU\Environment" /v Path 2^>nul ^| find /i "Path"') do set "USER_PATH=%%B"
+
+if defined MACHINE_PATH (
+  if defined USER_PATH (
+    set "PATH=!MACHINE_PATH!;!USER_PATH!"
+  ) else (
+    set "PATH=!MACHINE_PATH!"
+  )
 )
-echo.
 
-:: ── Step 2: Ollama ──────────────────────────────────────────
-echo [2/4] Installing / upgrading Ollama...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
-if %errorlevel% neq 0 (
-    echo.
-    echo ERROR: Ollama setup failed. Cannot continue.
-    pause
-    exit /b 1
+where node >nul 2>nul
+if errorlevel 1 (
+  echo [ERROR] Node.js not found on PATH.
+  echo Please install Node.js (LTS), then re-run start.bat.
+  echo.
+  echo To run without the desktop shortcut run one of these commands:
+  echo   CMD: cd /d "%REPO_DIR%" ^&^& start.bat
+  echo   PowerShell: Set-Location "%REPO_DIR%"; .\start.bat
+  pause
+  exit /b 2
 )
-echo.
 
-:: ── Step 3: Ensure Ollama server is running ─────────────────
-echo [3/4] Ensuring Ollama server is running...
+where ollama >nul 2>nul
+if errorlevel 1 (
+  echo [ERROR] Ollama not found on PATH.
+  echo Please install Ollama, then re-run start.bat.
+  echo.
+  echo To run without the desktop shortcut run one of these commands:
+  echo   CMD: cd /d "%REPO_DIR%" ^&^& start.bat
+  echo   PowerShell: Set-Location "%REPO_DIR%"; .\start.bat
+  pause
+  exit /b 2
+)
 
-:: Quick connectivity check: attempt TCP connect to 127.0.0.1:11434.
+echo [INFO] Starting Ollama server...
+start "" /min cmd /c "ollama serve"
+
+echo [INFO] Starting Node server...
+start "" /min cmd /c "cd /d ""%REPO_DIR%"" && node server.js"
+
+echo [INFO] Waiting for http://127.0.0.1:3000 ...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "try { $t = New-Object System.Net.Sockets.TcpClient; $t.Connect('127.0.0.1',11434); $t.Close(); exit 0 } catch { exit 1 }" >nul 2>&1
-
-if %errorlevel% == 0 (
-    echo [Ollama] Server already running on 127.0.0.1:11434.
-) else (
-    echo [Ollama] Starting Ollama server in background...
-    start /min "Ollama Server" ollama serve
-
-    :: Wait up to 15 seconds for Ollama to become ready.
-    set OLLAMA_READY=0
-    for /l %%i in (1,1,15) do (
-        if !OLLAMA_READY! == 0 (
-            powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-              "try { $t = New-Object System.Net.Sockets.TcpClient; $t.Connect('127.0.0.1',11434); $t.Close(); exit 0 } catch { exit 1 }" >nul 2>&1
-            if !errorlevel! == 0 (
-                set OLLAMA_READY=1
-                echo [Ollama] Server ready.
-            ) else (
-                timeout /t 1 /nobreak >nul
-            )
-        )
-    )
-
-    if !OLLAMA_READY! == 0 (
-        echo [Ollama] WARNING: Could not confirm Ollama is ready after 15 s.
-        echo          The server may still be starting — proceeding anyway.
-    )
-)
-echo.
-
-:: ── Step 4: Start Node server and open browser ──────────────
-echo [4/4] Starting The OG Chatbot server...
-
-:: Verify server.js is present.
-if not exist "%~dp0server.js" (
-    echo ERROR: server.js not found in %~dp0
-    pause
-    exit /b 1
-)
-
-:: Open the browser after a short delay to give Node time to bind.
-start "" /b cmd /c "timeout /t 2 /nobreak >nul && start http://127.0.0.1:3000"
+  "$u='http://127.0.0.1:3000';" ^
+  "$ok=$false;" ^
+  "for($i=0;$i -lt 40;$i++){" ^
+  "  try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 $u | Out-Null; $ok=$true; break } catch { Start-Sleep -Milliseconds 250 }" ^
+  "}" ^
+  "if($ok){ Start-Process $u } else { Write-Host 'Server not responding yet; open manually: ' $u -ForegroundColor Yellow }"
 
 echo.
-echo ============================================================
-echo  The OG Chatbot is running at http://127.0.0.1:3000
-echo  Press Ctrl+C (or close this window) to stop the server.
-echo ============================================================
+set "ANSWER=Y"
+set /p "ANSWER=Create Desktop shortcut for The OG Chatbot? (Y/n): "
+if /i "!ANSWER!"=="N" goto :PRINT_NOTE
+
+echo [INFO] Creating Desktop shortcut...
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$repo='%REPO_DIR%';" ^
+  "$desktop=[Environment]::GetFolderPath('Desktop');" ^
+  "$lnk=Join-Path $desktop 'The OG Chatbot.lnk';" ^
+  "$w=New-Object -ComObject WScript.Shell;" ^
+  "$s=$w.CreateShortcut($lnk);" ^
+  "$s.TargetPath='cmd.exe';" ^
+  "$s.Arguments='/c """"'+(Join-Path $repo 'start.bat')+'""""';" ^
+  "$s.WorkingDirectory=$repo;" ^
+  "$s.IconLocation='%SystemRoot%\System32\cmd.exe,0';" ^
+  "$s.Save();"
+
+:PRINT_NOTE
+echo.
+echo To run without the desktop shortcut run one of these commands:
+echo   CMD: cd /d "%REPO_DIR%" ^&^& start.bat
+echo   PowerShell: Set-Location "%REPO_DIR%"; .\start.bat
 echo.
 
-node "%~dp0server.js"
-
-:: If node exits, pause so the user can read any error output.
-echo.
-echo Server stopped.
-pause
+endlocal
 exit /b 0
