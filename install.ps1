@@ -1,13 +1,14 @@
 <#
 .SYNOPSIS
-    Windows installer for the offlineAI local chat app.
+    Windows installer for The OG Chatbot local chat app.
 
 .DESCRIPTION
     - Checks prerequisites (Node.js, npm, Ollama).
     - Runs `npm install`.
     - Pulls the chosen Ollama model (default: qwen2.5:3b).
-    - Sets OLLAMA_MODEL for the current session and shows how to persist it.
-    - Optionally starts the app.
+    - Persists OLLAMA_MODEL as a system environment variable (machine-level).
+    - Optionally creates a Desktop shortcut.
+    - Optionally starts the app and opens it in the browser.
 
 .PARAMETER Model
     Ollama model to pull and use. Overrides the OLLAMA_MODEL environment variable.
@@ -181,33 +182,61 @@ if ($LASTEXITCODE -ne 0) {
 Write-OK "Model '$chosenModel' is ready."
 
 # ---------------------------------------------------------------------------
-# 6. Set OLLAMA_MODEL for this session + persistence instructions
+# 6. Persist OLLAMA_MODEL (session + machine/user level)
 # ---------------------------------------------------------------------------
 Write-Header "Setting OLLAMA_MODEL"
 
 $env:OLLAMA_MODEL = $chosenModel
-Write-OK "OLLAMA_MODEL set to '$chosenModel' for this PowerShell session."
+Write-OK "OLLAMA_MODEL set to '$chosenModel' for this session."
 
-Write-Host ""
-Write-Info "To persist this across sessions, run ONE of the following:"
-Write-Info ""
-Write-Info "  (User) [Environment]::SetEnvironmentVariable('OLLAMA_MODEL', '$chosenModel', 'User')"
-Write-Info "  (System, admin) [Environment]::SetEnvironmentVariable('OLLAMA_MODEL', '$chosenModel', 'Machine')"
-Write-Info ""
-Write-Info "Or add the following line to your PowerShell profile (`$PROFILE):"
-Write-Info "  `$env:OLLAMA_MODEL = '$chosenModel'"
+try {
+    [Environment]::SetEnvironmentVariable('OLLAMA_MODEL', $chosenModel, 'Machine')
+    Write-OK "OLLAMA_MODEL persisted at Machine (system) level."
+} catch {
+    # Fall back to user-level if not running as admin.
+    try {
+        [Environment]::SetEnvironmentVariable('OLLAMA_MODEL', $chosenModel, 'User')
+        Write-OK "OLLAMA_MODEL persisted at User level (run as Administrator to persist system-wide)."
+    } catch {
+        Write-Info "Could not persist OLLAMA_MODEL automatically. Set it manually if needed:"
+        Write-Info "  [Environment]::SetEnvironmentVariable('OLLAMA_MODEL', '$chosenModel', 'User')"
+    }
+}
 
 # ---------------------------------------------------------------------------
-# 7. Optionally start the app
+# 7. Optional Desktop shortcut
+# ---------------------------------------------------------------------------
+Write-Host ""
+$createShortcut = Confirm-YesNo "Create Desktop shortcut for The OG Chatbot?" $true
+if ($createShortcut) {
+    try {
+        $desktopPath = [Environment]::GetFolderPath("Desktop")
+        $shortcutPath = Join-Path $desktopPath "The OG Chatbot.lnk"
+        $wsh = New-Object -ComObject WScript.Shell
+        $shortcut = $wsh.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath = Join-Path $repoRoot "start.bat"
+        $shortcut.WorkingDirectory = $repoRoot
+        $shortcut.Description = "Launch The OG Chatbot"
+        $shortcut.Save()
+        Write-OK "Desktop shortcut created: $shortcutPath"
+    } catch {
+        Write-Info "Could not create Desktop shortcut: $_"
+    }
+}
+
+# ---------------------------------------------------------------------------
+# 8. Optionally start the app
 # ---------------------------------------------------------------------------
 Write-Host ""
 Write-Header "Installation complete"
-Write-OK "offlineAI is ready to use."
+Write-OK "The OG Chatbot is ready to use."
 Write-Host ""
 
 $startNow = Confirm-YesNo "Would you like to start the app now?" $true
 if ($startNow) {
-    Write-Header "Starting the app (npm start)"
+    Write-Header "Starting the app"
+    # Open browser after a short delay to let the server bind.
+    Start-Job -ScriptBlock { Start-Sleep -Seconds 2; Start-Process "http://localhost:3000" } | Out-Null
     Push-Location $repoRoot
     try {
         & npm start
@@ -218,11 +247,12 @@ if ($startNow) {
     } finally {
         Pop-Location
     }
-} else {
-    Write-Host ""
-    Write-Info "To start the app later, run from the repo directory:"
-    Write-Info "  npm start"
-    Write-Info "Or double-click install.bat and choose 'start' when prompted."
 }
+
+Write-Host ""
+Write-Info "To run without the desktop shortcut run one of these commands:"
+Write-Info "  CMD:        cd /d `"$repoRoot`" && start.bat"
+Write-Info "  PowerShell: Set-Location `"$repoRoot`"; .\start.bat"
+Write-Host ""
 
 exit 0

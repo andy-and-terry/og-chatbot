@@ -1,4 +1,4 @@
-# offlineAI
+# The OG Chatbot
 
 A local, offline personal AI chat agent powered by [Ollama](https://ollama.com) and Node.js.
 Everything runs on your own machine — no cloud accounts, no paid APIs.
@@ -29,8 +29,9 @@ The installer will:
 1. Verify prerequisites (Node.js, npm, Ollama).
 2. Run `npm install` to set up Node dependencies.
 3. Pull the default Ollama model (`qwen2.5:3b`, a good fit for 8 GB RAM).
-4. Set `OLLAMA_MODEL` for the current session and show you how to persist it.
-5. Ask if you want to start the app immediately.
+4. Automatically persist `OLLAMA_MODEL` as a system environment variable (machine-level, with user-level fallback).
+5. Offer to create a Desktop shortcut — **The OG Chatbot** — that launches the app in one click.
+6. Ask if you want to start the app immediately; if yes, the browser opens at `http://localhost:3000` automatically.
 
 ### Using PowerShell directly
 
@@ -73,13 +74,19 @@ Recommended models by available RAM / VRAM:
 
 ### Starting the app later
 
-If you skipped the auto-start during installation, run from the repo root:
+If you skipped the auto-start during installation, use the Desktop shortcut created by the installer, or run one of these commands from the repo root:
 
+**CMD:**
 ```bat
-npm start
+cd /d "path\to\og-chatbot" && start.bat
 ```
 
-Then open your browser at `http://localhost:3000`.
+**PowerShell:**
+```powershell
+Set-Location "path\to\og-chatbot"; .\start.bat
+```
+
+The browser will open at `http://localhost:3000` automatically.
 
 ---
 
